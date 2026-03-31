@@ -131,7 +131,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   // Listen for auth state changes
   useEffect(() => {
+    // Safety net: if onAuthStateChanged never fires (e.g. domain not authorized),
+    // force loading=false after 8s so the app doesn't hang on the spinner forever.
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 8000);
+
     const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      clearTimeout(safetyTimer);
       userRef.current = firebaseUser;
       setUser(firebaseUser);
 
@@ -145,7 +152,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       setLoading(false);
     });
-    return () => { unsub(); if (flushTimer.current) clearTimeout(flushTimer.current); };
+    return () => { clearTimeout(safetyTimer); unsub(); if (flushTimer.current) clearTimeout(flushTimer.current); };
   }, [flush]);
 
   const signUp = async (email: string, password: string) => {
