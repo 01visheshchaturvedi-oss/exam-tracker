@@ -785,6 +785,11 @@ export default function App() {
   );
 
   return (
+    <>
+      {/* ── Author / Version Banner ── */}
+      <div className={`w-full text-center text-[11px] font-mono py-1.5 px-4 tracking-wide select-none shrink-0 ${th==='light'?'bg-slate-800 text-white/80 border-b border-slate-700':'bg-[#111215] text-white/40 border-b border-white/5'}`}>
+        Author © Vishesh.chaturvedi&nbsp;&nbsp;|&nbsp;&nbsp;All rights reserved&nbsp;&nbsp;|&nbsp;&nbsp;App version: 2.5
+      </div>
     <div className={`min-h-screen font-sans flex overflow-hidden transition-colors duration-300 ${th==='light'?'bg-[#f8f9fa] text-slate-900':'bg-[#0a0a0b] text-white'}`}>
 
       {/* ── Recovery Banner — non-blocking, slides in from top, auto-dismisses ── */}
@@ -1070,6 +1075,7 @@ export default function App() {
 
       <AnimatePresence>{showLibraryManager&&<LibraryManagerModal theme={th} onClose={()=>{setShowLibraryManager(false);reload();}}/>}</AnimatePresence>
     </div>
+    </>
   );
 }
 
