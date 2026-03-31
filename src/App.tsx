@@ -231,6 +231,7 @@ export default function App() {
   const [view, setView]               = useState<'tasks'|'analytics'|'benchmarks'|'settings'>('tasks');
   const [library, setLibrary]         = useState<Task[]>([]);
   const [todayTasks, setTodayTasks]   = useState<Task[]>([]);
+  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
   const [completedIds, setCompletedIds] = useState<Set<number>>(new Set());
   const [benchmarks, setBenchmarks]   = useState<Record<string,Benchmark>>({});
   const [todayStats, setTodayStats]   = useState({ total_seconds:0, overtime_count:0 });
