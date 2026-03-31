@@ -4,8 +4,11 @@ import {
   User, Calendar, BookOpen, AlertTriangle, ChevronRight,
   Settings, Clock, TrendingUp, ListTodo, Plus, Play,
   Square, CheckCircle2, XCircle, History, Brain, Sun, Moon, Target,
-  Pencil, Bell, FlaskConical, Save, Pause
+  Pencil, Bell, FlaskConical, Save, Pause, LogOut, Menu, X as XIcon,
+  Cloud, CloudOff, Loader2
 } from 'lucide-react';
+import { useAuth } from './AuthContext';
+import AuthScreen from './AuthScreen';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -104,11 +107,18 @@ async function sendTelegramMessage(text: string) {
 }
 
 // ─── localStorage helpers ─────────────────────────────────────────────────────
+// Module-level bridge: set by App component once auth hook is available
+let _pushToCloud: ((key: string, value: string) => void) | null = null;
+export function setPushToCloud(fn: (key: string, value: string) => void) { _pushToCloud = fn; }
+
 const LS = {
   get: <T,>(key: string, fb: T): T => { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fb; } catch { return fb; } },
   set: <T,>(key: string, val: T) => {
     try {
-      localStorage.setItem(key, JSON.stringify(val));
+      const jsonVal = JSON.stringify(val);
+      localStorage.setItem(key, jsonVal);
+      // Mirror to Firestore cloud if user is logged in
+      if (_pushToCloud) _pushToCloud(key, jsonVal);
       // Debounced backup push: coalesce rapid writes into one request
       if (BACKUP_KEYS.includes(key)) {
         clearTimeout((LS as any)._bt);
@@ -249,6 +259,9 @@ function computeEffectiveElapsed(state: ActiveTaskState, wallNow: number): numbe
 
 // ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  const { user, loading: authLoading, syncStatus, logOut, pushToCloud } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [settings, setSettings]       = useState<UserSettings | null>(null);
   const [step, setStep]               = useState(1);
   const [view, setView]               = useState<'tasks'|'analytics'|'benchmarks'|'settings'>('tasks');
@@ -315,6 +328,19 @@ export default function App() {
     setLifeWeeklyStats(computeLifeWeeklyStats()); setLifeTaskStats(computeLifeTaskStats());
     setCompletedIds(new Set(getLogs().filter(l=>l.date===todayKey()).map(l=>l.task_id)));
   }, []);
+
+  // ── Wire pushToCloud bridge to auth hook ─────────────────────────────────
+  useEffect(() => { setPushToCloud(pushToCloud); }, [pushToCloud]);
+
+  // ── Reload app data whenever Firebase hydrates localStorage after login ──
+  useEffect(() => {
+    if (user && syncStatus === 'synced') {
+      const saved = LS.get<UserSettings | null>(KEYS.settings, null);
+      if (saved) { setSettings(saved); setFormData(saved); }
+      reload();
+      const goal = getTodayGoal(); setTodayGoal(goal);
+    }
+  }, [user, syncStatus]);
 
   // ── Boot ─────────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -739,6 +765,22 @@ export default function App() {
   const th = settings?.theme ?? 'dark';
   const goalInfo = goalCompletionTime();
 
+  // ── Auth loading screen ───────────────────────────────────────────────────
+  if (authLoading) return (
+    <div className="min-h-screen bg-[#0a0a0b] flex items-center justify-center">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-10 h-10 bg-red-600 rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(220,38,38,0.4)]">
+          <Clock className="w-6 h-6 text-white"/>
+        </div>
+        <Loader2 className="w-6 h-6 text-white/30 animate-spin"/>
+        <p className="text-white/30 text-xs font-mono uppercase tracking-widest">Loading ExamRigor…</p>
+      </div>
+    </div>
+  );
+
+  // ── Auth gate: show login if not signed in ────────────────────────────────
+  if (!user) return <LoginScreen />;
+
   // ── Onboarding ────────────────────────────────────────────────────────────
   if (!settings) return (
     <div className="min-h-screen bg-[#151619] text-white font-sans flex items-center justify-center p-6">
@@ -827,22 +869,55 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* ── Mobile sidebar overlay backdrop ── */}
+      {sidebarOpen && (
+        <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden" onClick={() => setSidebarOpen(false)}/>
+      )}
+
       {/* ── Sidebar ── */}
-      <aside className={`w-64 border-r flex flex-col shrink-0 ${th==='light'?'bg-white border-slate-200':'bg-[#0d0e11] border-white/5'}`}>
-        <div className={`p-6 border-b ${th==='light'?'border-slate-200':'border-white/5'}`}>
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(220,38,38,0.3)]"><Clock className="w-5 h-5 text-white"/></div>
-            <h1 className="font-bold tracking-tight text-lg">ExamRigor</h1>
+      <aside className={`
+        fixed md:static inset-y-0 left-0 z-40
+        w-72 md:w-64 border-r flex flex-col shrink-0
+        transition-transform duration-300 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+        ${th==='light'?'bg-white border-slate-200':'bg-[#0d0e11] border-white/5'}
+      `}>
+        <div className={`p-5 border-b flex items-center justify-between ${th==='light'?'border-slate-200':'border-white/5'}`}>
+          <div>
+            <div className="flex items-center gap-3 mb-0.5">
+              <div className="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center shadow-[0_0_15px_rgba(220,38,38,0.3)]"><Clock className="w-5 h-5 text-white"/></div>
+              <h1 className="font-bold tracking-tight text-lg">ExamRigor</h1>
+            </div>
+            <p className={`text-[10px] font-mono uppercase tracking-widest ml-11 ${th==='light'?'text-slate-400':'text-white/40'}`}>Personal Study OS</p>
           </div>
-          <p className={`text-[10px] font-mono uppercase tracking-widest ${th==='light'?'text-slate-400':'text-white/40'}`}>Personal Study OS</p>
+          <button className="md:hidden p-1.5 rounded-lg opacity-50 hover:opacity-100" onClick={() => setSidebarOpen(false)}>
+            <XIcon className="w-4 h-4"/>
+          </button>
         </div>
         <nav className="flex-1 p-4 space-y-2">
           {(['tasks','analytics','benchmarks','settings'] as const).map(v=>(
             <NavItem key={v} icon={v==='tasks'?<ListTodo className="w-4 h-4"/>:v==='analytics'?<TrendingUp className="w-4 h-4"/>:v==='benchmarks'?<History className="w-4 h-4"/>:<Settings className="w-4 h-4"/>}
-              label={v==='tasks'?'Daily Tasks':v==='analytics'?'Analytics':v==='benchmarks'?'Benchmarks':'Settings'} active={view===v} onClick={()=>setView(v)} theme={th}/>
+              label={v==='tasks'?'Daily Tasks':v==='analytics'?'Analytics':v==='benchmarks'?'Benchmarks':'Settings'} active={view===v}
+              onClick={()=>{ setView(v); setSidebarOpen(false); }} theme={th}/>
           ))}
         </nav>
-        {/* ── bg-notifier status pill at bottom of sidebar ── */}
+        {/* ── Sync + Account status ── */}
+        <div className={`mx-4 mb-2 rounded-xl p-3 border flex items-center gap-2 ${th==='light'?'bg-slate-50 border-slate-200':'bg-white/5 border-white/5'}`}>
+          {syncStatus === 'syncing' ? <Loader2 className="w-3.5 h-3.5 text-blue-400 animate-spin shrink-0"/> :
+           syncStatus === 'synced'  ? <Cloud className="w-3.5 h-3.5 text-emerald-400 shrink-0"/> :
+           syncStatus === 'error'   ? <CloudOff className="w-3.5 h-3.5 text-red-400 shrink-0"/> :
+                                      <Cloud className="w-3.5 h-3.5 text-white/20 shrink-0"/>}
+          <div className="flex-1 min-w-0">
+            <p className={`text-[10px] font-mono font-bold truncate ${th==='light'?'text-slate-600':'text-white/60'}`}>{user?.email}</p>
+            <p className={`text-[10px] font-mono ${syncStatus==='syncing'?'text-blue-400':syncStatus==='synced'?'text-emerald-400':syncStatus==='error'?'text-red-400':'text-white/20'}`}>
+              {syncStatus==='syncing'?'Syncing…':syncStatus==='synced'?'✓ Synced':syncStatus==='error'?'Sync error':'Cloud sync'}
+            </p>
+          </div>
+          <button onClick={logOut} title="Sign out" className="p-1.5 rounded-lg text-white/20 hover:text-red-400 hover:bg-red-500/10 transition-all shrink-0">
+            <LogOut className="w-3.5 h-3.5"/>
+          </button>
+        </div>
+        {/* ── bg-notifier status pill ── */}
         <div className="px-4 pb-1">
           {bgStatus === 'offline' ? (
             <div className={`rounded-xl p-3 border ${th==='light'?'bg-amber-50 border-amber-300':'bg-amber-500/10 border-amber-500/30'}`}>
@@ -887,25 +962,36 @@ export default function App() {
 
       {/* ── Main ── */}
       <main className="flex-1 flex flex-col min-w-0">
-        <header className={`h-16 border-b backdrop-blur-xl flex items-center justify-between px-8 shrink-0 ${th==='light'?'bg-white/80 border-slate-200':'bg-[#0d0e11]/50 border-white/5'}`}>
-          <div className="flex items-center gap-6">
-            <div className="flex flex-col"><span className={`text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Time Studied</span><span className={`text-sm font-bold font-mono ${th==='light'?'text-slate-700':'text-white/80'}`}>{formatTime(todayStats.total_seconds+(activeTaskState?.task?.category==='core'?displayTimer:0))}</span></div>
-            <div className={`h-8 w-px ${th==='light'?'bg-slate-200':'bg-white/5'}`}/>
-            <div className="flex flex-col"><span className={`text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Remaining</span>
-              <span className={`text-sm font-bold ${parseFloat(remainingHours())<1?'text-red-500':th==='light'?'text-blue-600':'text-blue-400'}`}>{remainingHours()}h{parseFloat(remainingHours())<0.5&&<AlertTriangle className="w-3 h-3 animate-bounce inline ml-1"/>}</span>
+        <header className={`h-14 md:h-16 border-b backdrop-blur-xl flex items-center justify-between px-4 md:px-8 shrink-0 gap-3 ${th==='light'?'bg-white/80 border-slate-200':'bg-[#0d0e11]/50 border-white/5'}`}>
+          {/* Hamburger — mobile only */}
+          <button className="md:hidden p-2 rounded-lg shrink-0" onClick={() => setSidebarOpen(true)}>
+            <Menu className={`w-5 h-5 ${th==='light'?'text-slate-600':'text-white/60'}`}/>
+          </button>
+          {/* Stats row */}
+          <div className="flex items-center gap-3 md:gap-6 overflow-x-auto flex-1 min-w-0">
+            <div className="flex flex-col shrink-0">
+              <span className={`text-[9px] md:text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Studied</span>
+              <span className={`text-xs md:text-sm font-bold font-mono ${th==='light'?'text-slate-700':'text-white/80'}`}>{formatTime(todayStats.total_seconds+(activeTaskState?.task?.category==='core'?displayTimer:0))}</span>
             </div>
-            <div className={`h-8 w-px ${th==='light'?'bg-slate-200':'bg-white/5'}`}/>
-            <div className="flex flex-col"><span className={`text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Goal Complete By</span>
-              <span className={`text-sm font-bold ${goalInfo&&goalInfo.remainingSec===0?'text-emerald-500':th==='light'?'text-slate-700':'text-white/80'}`}>{goalInfo?(goalInfo.remainingSec===0?'✓ Done!':goalInfo.time):'No goal set'}</span>
+            <div className={`h-7 w-px shrink-0 ${th==='light'?'bg-slate-200':'bg-white/5'}`}/>
+            <div className="flex flex-col shrink-0">
+              <span className={`text-[9px] md:text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Left</span>
+              <span className={`text-xs md:text-sm font-bold ${parseFloat(remainingHours())<1?'text-red-500':th==='light'?'text-blue-600':'text-blue-400'}`}>{remainingHours()}h{parseFloat(remainingHours())<0.5&&<AlertTriangle className="w-3 h-3 animate-bounce inline ml-1"/>}</span>
+            </div>
+            <div className={`h-7 w-px shrink-0 hidden sm:block ${th==='light'?'bg-slate-200':'bg-white/5'}`}/>
+            <div className="hidden sm:flex flex-col shrink-0">
+              <span className={`text-[9px] md:text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Done By</span>
+              <span className={`text-xs md:text-sm font-bold ${goalInfo&&goalInfo.remainingSec===0?'text-emerald-500':th==='light'?'text-slate-700':'text-white/80'}`}>{goalInfo?(goalInfo.remainingSec===0?'✓ Done!':goalInfo.time):'—'}</span>
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          {/* Right: theme toggle + exam target */}
+          <div className="flex items-center gap-2 md:gap-4 shrink-0">
             <button onClick={toggleTheme} className={`p-2 rounded-lg transition-colors ${th==='light'?'bg-slate-100 text-slate-600 hover:bg-slate-200':'bg-white/5 text-white/60 hover:bg-white/10'}`}>{th==='light'?<Moon className="w-4 h-4"/>:<Sun className="w-4 h-4"/>}</button>
-            <div className="text-right"><p className={`text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Exam Target</p><p className="text-sm font-medium">{settings.exam_month}</p></div>
+            <div className="hidden md:block text-right"><p className={`text-[10px] uppercase tracking-wider font-mono ${th==='light'?'text-slate-400':'text-white/30'}`}>Exam</p><p className="text-sm font-medium">{settings.exam_month}</p></div>
           </div>
         </header>
 
-        <div className="flex-1 p-8 overflow-y-auto">
+        <div className="flex-1 p-4 md:p-8 overflow-y-auto">
           <div className="max-w-6xl mx-auto">
             {/* ── Multi-Pause Queue — shown on every view ── */}
             {pausedTasks.length > 0 && (
@@ -1736,6 +1822,13 @@ function LibraryManagerModal({theme,onClose}:{theme?:string;onClose:()=>void}) {
       </motion.div>
     </div>
   );
+}
+
+// ─── LoginScreen ──────────────────────────────────────────────────────────────
+// Thin wrapper so App.tsx can reference <LoginScreen /> while the full UI
+// lives in AuthScreen.tsx (keeps concerns separated and avoids duplication).
+function LoginScreen() {
+  return <AuthScreen />;
 }
 
 // ─── SampleTimerModal ─────────────────────────────────────────────────────────
