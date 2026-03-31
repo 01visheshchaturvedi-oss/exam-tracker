@@ -56,9 +56,37 @@ function requestNotificationPermission() {
   }
 }
 function showBrowserNotification(title: string, body: string) {
-  if ('Notification' in window && Notification.permission === 'granted') {
-    try { new Notification(title, { body, silent: false }); } catch {}
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  // Prefer Service Worker notifications so they keep working better in background.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.ready
+      .then(reg => reg.showNotification(title, { body, requireInteraction: true }))
+      .catch(() => {
+        try { new Notification(title, { body, silent: false }); } catch {}
+      });
+    return;
   }
+
+  try { new Notification(title, { body, silent: false }); } catch {}
+}
+
+async function syncRemindersToServiceWorker(reminders: TaskReminder[]) {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const target = reg.active || reg.waiting || reg.installing;
+    target?.postMessage({ type: 'SYNC_REMINDERS', reminders });
+  } catch (_) {}
+}
+
+async function triggerServiceWorkerReminderCheck() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const target = reg.active || reg.waiting || reg.installing;
+    target?.postMessage({ type: 'CHECK_REMINDERS_NOW' });
+  } catch (_) {}
 }
 
 // ─── Sync reminders to bg-notifier (for background / app-closed alerts) ───────
@@ -353,6 +381,7 @@ export default function App() {
     }
     reload();
     requestNotificationPermission();
+    syncRemindersToServiceWorker(getReminders());
     const goal = getTodayGoal(); setTodayGoal(goal);
     if (saved && !goal) setShowGoalModal(true);
 
@@ -445,6 +474,7 @@ export default function App() {
       // Fire on minute change — more reliable than checking seconds===0
       if (hhmm !== lastMinuteRef.current) {
         lastMinuteRef.current = hhmm;
+        triggerServiceWorkerReminderCheck();
         getReminders().filter(r=>r.enabled&&r.time===hhmm).forEach(r => {
           const key = `${r.task_id}-${hhmm}-${d.toDateString()}`;
           if (!firedRemindersRef.current.has(key)) {
@@ -544,6 +574,11 @@ export default function App() {
     document.addEventListener('visibilitychange', fn);
     return () => document.removeEventListener('visibilitychange', fn);
   }, []);
+
+  // Mirror reminder schedule to Service Worker for background checks.
+  useEffect(() => {
+    syncRemindersToServiceWorker(reminders);
+  }, [reminders]);
 
   const goalCompletionTime = () => {
     if (!todayGoal) return null;

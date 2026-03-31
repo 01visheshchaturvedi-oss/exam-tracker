@@ -1,0 +1,9 @@
+{
+  "name": "ExamRigor",
+  "short_name": "ExamRigor",
+  "description": "Personal study tracker with reminder notifications.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0b",
+  "theme_color": "#dc2626"
+}
