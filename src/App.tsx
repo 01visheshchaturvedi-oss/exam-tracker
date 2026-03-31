@@ -281,6 +281,17 @@ export default function App() {
   const [ytDismissed, setYtDismissed]     = useState<Set<string>>(new Set());
   const ytSeenIdsRef                      = useRef<Set<string>>(new Set());
 
+  const handleYtAlert = useCallback((alert: YtAlert) => {
+    setYtAlerts(prev => {
+      if (prev.find(a => a.id === alert.id)) return prev;
+      return [...prev, alert];
+    });
+    showBrowserNotification(
+      `Live Class: ${alert.taskName}`,
+      `${alert.channelName} just uploaded: ${alert.videoTitle}`
+    );
+  }, []);
+
   const reload = useCallback(() => {
     const lib = getLibrary(); const ids = getTodayTaskIds();
     setLibrary(lib); setTodayTasks(lib.filter(t => ids.includes(t.id)));
@@ -338,17 +349,6 @@ export default function App() {
       });
     }
 
-    const handleYtAlert = (alert: YtAlert) => {
-      setYtAlerts(prev => {
-        if (prev.find(a => a.id === alert.id)) return prev;
-        return [...prev, alert];
-      });
-      showBrowserNotification(
-        `Live Class: ${alert.taskName}`,
-        `${alert.channelName} just uploaded: ${alert.videoTitle}`
-      );
-    };
-
     // ── Seamless session recovery ─────────────────────────────────────────
     // Load all paused tasks
     const savedPaused = loadPausedTasks();
@@ -391,7 +391,6 @@ export default function App() {
     // ── Cleanup ──────────────────────────────────────────────────────────
     return () => {
       clearInterval(backupInterval);
-      if (bgPollInterval) clearInterval(bgPollInterval);
     };
   }, []);
 
