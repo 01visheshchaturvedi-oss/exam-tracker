@@ -157,14 +157,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signUp = async (email: string, password: string) => {
     await createUserWithEmailAndPassword(auth, email, password);
-    // Push any existing local data to the new cloud account
+    // Push any existing local data to the new cloud account (best-effort)
     const uid = auth.currentUser?.uid;
     if (uid) {
-      const writes = SYNC_KEYS.map(k => {
-        const v = localStorage.getItem(k);
-        return v ? writeKeyToFirestore(uid, k, v) : Promise.resolve();
-      });
-      await Promise.all(writes);
+      try {
+        const writes = SYNC_KEYS.map(k => {
+          const v = localStorage.getItem(k);
+          return v ? writeKeyToFirestore(uid, k, v) : Promise.resolve();
+        });
+        await Promise.all(writes);
+      } catch (e) {
+        console.warn('[AuthContext] signUp: initial Firestore push failed (rules may need updating):', e);
+      }
     }
   };
 
