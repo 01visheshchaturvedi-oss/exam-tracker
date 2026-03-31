@@ -39,7 +39,6 @@ export const SYNC_KEYS = [
   'examrigor_benchmarks',
   'examrigor_daily_goals',
   'examrigor_reminders',
-  'examrigor_telegram',
 ];
 
 // ── Types ────────────────────────────────────────────────────────────────────

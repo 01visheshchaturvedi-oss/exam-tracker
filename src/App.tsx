@@ -10,6 +10,8 @@ import {
 import { useAuth } from './AuthContext';
 import AuthScreen from './AuthScreen';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { useSound } from './hooks/useSound';
+import { YouTubeMonitor } from './components/YouTubeMonitor';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface UserSettings { name: string; exam_month: string; subject_count: number; negative_motivation: string; theme: 'light' | 'dark'; beep_count_overtime: number; }
@@ -27,27 +29,6 @@ interface ActiveTaskState {
 }
 interface LastStoppedInfo { task: Task; logId: string; elapsed_seconds: number; }
 interface TaskReminder { task_id: number; task_name: string; time: string; enabled: boolean; }
-
-// ─── Beep ─────────────────────────────────────────────────────────────────────
-function playBeep(times = 1) {
-  const fireOnce = () => {
-    try {
-      const a = new Audio('/beep.mp3'); a.volume = 1.0;
-      a.play().catch(() => {
-        try {
-          const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-          const osc = ctx.createOscillator(); const g = ctx.createGain();
-          osc.connect(g); g.connect(ctx.destination);
-          osc.type = 'sine'; osc.frequency.setValueAtTime(880, ctx.currentTime);
-          g.gain.setValueAtTime(0.6, ctx.currentTime);
-          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.8);
-          osc.start(ctx.currentTime); osc.stop(ctx.currentTime + 0.8);
-        } catch {}
-      });
-    } catch {}
-  };
-  for (let i = 0; i < times; i++) setTimeout(fireOnce, i * 700);
-}
 
 // ─── Browser / Desktop Notifications ──────────────────────────────────────────
 function requestNotificationPermission() {
@@ -89,51 +70,6 @@ async function triggerServiceWorkerReminderCheck() {
   } catch (_) {}
 }
 
-// ─── Sync reminders to bg-notifier (for background / app-closed alerts) ───────
-async function syncReminders(reminders: TaskReminder[]) {
-  try {
-    await fetch('http://localhost:3001/reminders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(reminders),
-    });
-  } catch (_) {} // bg-notifier may not be running — silent fail
-}
-
-// ─── Telegram helpers ─────────────────────────────────────────────────────────
-interface TelegramConfig { token: string; chatId: string; }
-
-function getTelegramConfig(): TelegramConfig {
-  return LS.get<TelegramConfig>(KEYS.telegramConfig, { token: '', chatId: '' });
-}
-function saveTelegramConfigLS(cfg: TelegramConfig) {
-  LS.set(KEYS.telegramConfig, cfg);
-}
-
-// Push Telegram config to bg-notifier so it survives app close
-async function syncTelegramConfig(cfg: TelegramConfig) {
-  try {
-    await fetch('http://localhost:3001/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ telegramToken: cfg.token, telegramChatId: cfg.chatId }),
-    });
-  } catch (_) {}
-}
-
-// Send a Telegram message directly from the browser (when app is open)
-async function sendTelegramMessage(text: string) {
-  const cfg = getTelegramConfig();
-  if (!cfg.token || !cfg.chatId) return;
-  try {
-    await fetch(`https://api.telegram.org/bot${cfg.token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: cfg.chatId, text, parse_mode: 'HTML' }),
-    });
-  } catch (_) {}
-}
-
 // ─── localStorage helpers ─────────────────────────────────────────────────────
 // Module-level bridge: set by App component once auth hook is available
 let _pushToCloud: ((key: string, value: string) => void) | null = null;
@@ -155,10 +91,10 @@ const LS = {
     } catch {}
   },
 };
-const KEYS = { settings:'examrigor_settings', library:'examrigor_library', dailyTasks:'examrigor_daily_tasks', logs:'examrigor_logs', benchmarks:'examrigor_benchmarks', dailyGoals:'examrigor_daily_goals', activeTask:'examrigor_active_task', reminders:'examrigor_reminders', telegramConfig:'examrigor_telegram', pausedTasks:'examrigor_paused_tasks', lastStopped:'examrigor_last_stopped' };
+const KEYS = { settings:'examrigor_settings', library:'examrigor_library', dailyTasks:'examrigor_daily_tasks', logs:'examrigor_logs', benchmarks:'examrigor_benchmarks', dailyGoals:'examrigor_daily_goals', activeTask:'examrigor_active_task', reminders:'examrigor_reminders', pausedTasks:'examrigor_paused_tasks', lastStopped:'examrigor_last_stopped' };
 
 // ─── Auto-Backup: saves all data to bg-notifier server → disk ────────────────
-const BACKUP_KEYS = ['examrigor_settings','examrigor_library','examrigor_daily_tasks','examrigor_logs','examrigor_benchmarks','examrigor_daily_goals','examrigor_reminders','examrigor_telegram'];
+const BACKUP_KEYS = ['examrigor_settings','examrigor_library','examrigor_daily_tasks','examrigor_logs','examrigor_benchmarks','examrigor_daily_goals','examrigor_reminders'];
 async function pushBackup() {
   try {
     const payload: Record<string, string> = {};
@@ -322,7 +258,7 @@ export default function App() {
   const overtimeFiredRef = useRef(false);
   const recoveryTimerRef = useRef<any>(null);
   const [showSampleTimer, setShowSampleTimer] = useState(false);
-  const [editingTaskId, setEditingTaskId] = useState<number | null>(null);
+  const { playBeep } = useSound();
   const [reminders, setReminders]     = useState<TaskReminder[]>(() => getReminders());
   const [showReminderFor, setShowReminderFor] = useState<Task | null>(null);
   const [reminderInput, setReminderInput] = useState('');
@@ -338,14 +274,12 @@ export default function App() {
   // ── YouTube alert state ──────────────────────────────────────────────────
   interface YtAlert {
     id: string; channelId: string; channelName: string;
-    taskName: string; subject: string;
-    videoId: string; videoTitle: string; videoUrl: string;
+    taskName: string; videoId: string; videoTitle: string; videoUrl: string;
     detectedAt: string; timeStr: string;
   }
   const [ytAlerts, setYtAlerts]           = useState<YtAlert[]>([]);
   const [ytDismissed, setYtDismissed]     = useState<Set<string>>(new Set());
   const ytSeenIdsRef                      = useRef<Set<string>>(new Set());
-  const [bgStatus, setBgStatus]           = useState<'checking'|'running'|'offline'>('checking');
 
   const reload = useCallback(() => {
     const lib = getLibrary(); const ids = getTodayTaskIds();
@@ -404,20 +338,16 @@ export default function App() {
       });
     }
 
-    // ── Check if bg-notifier is running ────────────────────────────────────
-    let bgPollInterval: any = null;
-    (async () => {
-      try {
-        const r = await fetch('http://localhost:3001/ping', { signal: AbortSignal.timeout(2000) });
-        setBgStatus(r.ok ? 'running' : 'offline');
-      } catch (_) { setBgStatus('offline'); }
-      bgPollInterval = setInterval(async () => {
-        try {
-          const r = await fetch('http://localhost:3001/ping', { signal: AbortSignal.timeout(2000) });
-          setBgStatus(r.ok ? 'running' : 'offline');
-        } catch (_) { setBgStatus('offline'); }
-      }, 30_000);
-    })();
+    const handleYtAlert = (alert: YtAlert) => {
+      setYtAlerts(prev => {
+        if (prev.find(a => a.id === alert.id)) return prev;
+        return [...prev, alert];
+      });
+      showBrowserNotification(
+        `Live Class: ${alert.taskName}`,
+        `${alert.channelName} just uploaded: ${alert.videoTitle}`
+      );
+    };
 
     // ── Seamless session recovery ─────────────────────────────────────────
     // Load all paused tasks
@@ -484,53 +414,11 @@ export default function App() {
               `Reminder: ${r.task_name}`,
               `It's ${hhmm} — time to start "${r.task_name}"`
             );
-            // Also send Telegram message from browser
-            sendTelegramMessage(
-              `<b>ExamRigor Reminder</b>\n\nTask: <b>${r.task_name}</b>\nTime: <b>${hhmm}</b>\n\nStart your task now!`
-            );
           }
         });
       }
     }, 1000);
     return () => clearInterval(tickRef.current);
-  }, []);
-
-  // ── YouTube alert polling — checks bg-notifier every 60s ─────────────────
-  useEffect(() => {
-    const pollYt = async () => {
-      try {
-        const res = await fetch('http://localhost:3001/yt-pending');
-        if (!res.ok) return;
-        const alerts: YtAlert[] = await res.json();
-        const fresh = alerts.filter(a => !ytSeenIdsRef.current.has(a.id));
-        if (fresh.length === 0) return;
-        fresh.forEach(a => ytSeenIdsRef.current.add(a.id));
-        setYtAlerts(prev => {
-          const existingIds = new Set(prev.map(x => x.id));
-          return [...prev, ...fresh.filter(a => !existingIds.has(a.id))];
-        });
-        // Beep + browser notification for each new alert
-        fresh.forEach(a => {
-          playBeep(3);
-          showBrowserNotification(
-            `Live Class: ${a.taskName}`,
-            `${a.channelName} just uploaded: ${a.videoTitle}`
-          );
-          sendTelegramMessage(
-            `<b>YouTube Class Alert!</b>\n\nChannel: <b>${a.channelName}</b>\nTask: <b>${a.taskName}</b>\nTime: <b>${a.timeStr}</b>\n\n${a.videoTitle}\n\n${a.videoUrl}`
-          );
-        });
-        // Clear from bg-notifier queue
-        await fetch('http://localhost:3001/yt-pending/clear', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(fresh.map(a => a.id)),
-        });
-      } catch (_) {}
-    };
-    pollYt(); // immediate check on mount
-    const interval = setInterval(pollYt, 60 * 1000);
-    return () => clearInterval(interval);
   }, []);
 
   // ── Timer display — recomputed every tick from persisted timestamps ───────
@@ -593,10 +481,10 @@ export default function App() {
 
   const handleSetReminder = (task: Task, time: string) => {
     const updated = [...reminders.filter(r=>r.task_id!==task.id), { task_id:task.id, task_name:task.name, time, enabled:true }];
-    saveReminders(updated); setReminders(updated); setShowReminderFor(null); syncReminders(updated);
+    saveReminders(updated); setReminders(updated); setShowReminderFor(null);
   };
-  const toggleReminder = (id: number) => { const u = reminders.map(r=>r.task_id===id?{...r,enabled:!r.enabled}:r); saveReminders(u); setReminders(u); syncReminders(u); };
-  const deleteReminder = (id: number) => { const u = reminders.filter(r=>r.task_id!==id); saveReminders(u); setReminders(u); syncReminders(u); };
+  const toggleReminder = (id: number) => { const u = reminders.map(r=>r.task_id===id?{...r,enabled:!r.enabled}:r); saveReminders(u); setReminders(u); };
+  const deleteReminder = (id: number) => { const u = reminders.filter(r=>r.task_id!==id); saveReminders(u); setReminders(u); };
 
   const handleEditTask = (taskId: number, changes: Partial<Task>) => {
     const lib = getLibrary(); const idx = lib.findIndex(t=>t.id===taskId);
@@ -863,6 +751,7 @@ export default function App() {
 
   return (
     <>
+      <YouTubeMonitor onAlert={handleYtAlert} />
       {/* ── Author / Version Banner ── */}
       <div className={`w-full text-center text-[11px] font-mono py-1.5 px-4 tracking-wide select-none shrink-0 ${th==='light'?'bg-slate-800 text-white/80 border-b border-slate-700':'bg-[#111215] text-white/40 border-b border-white/5'}`}>
         Author © Vishesh.chaturvedi&nbsp;&nbsp;|&nbsp;&nbsp;All rights reserved&nbsp;&nbsp;|&nbsp;&nbsp;App version: 2.5
@@ -952,24 +841,6 @@ export default function App() {
             <LogOut className="w-3.5 h-3.5"/>
           </button>
         </div>
-        {/* ── bg-notifier status pill ── */}
-        <div className="px-4 pb-1">
-          {bgStatus === 'offline' ? (
-            <div className={`rounded-xl p-3 border ${th==='light'?'bg-amber-50 border-amber-300':'bg-amber-500/10 border-amber-500/30'}`}>
-              <p className={`text-[10px] font-bold uppercase font-mono mb-1 ${th==='light'?'text-amber-700':'text-amber-400'}`}>Background Service Offline</p>
-              <p className={`text-[10px] mb-2 leading-relaxed ${th==='light'?'text-amber-600':'text-amber-400/70'}`}>Run <code className="font-mono font-bold">start-background-alerts.bat</code> once, or double-click <code className="font-mono font-bold">INSTALL-AUTO-START.bat</code> to never think about this again.</p>
-              <button onClick={async()=>{
-                try{const r=await fetch('http://localhost:3001/ping',{signal:AbortSignal.timeout(1500)});setBgStatus(r.ok?'running':'offline');}
-                catch(_){setBgStatus('offline');}
-              }} className={`text-[10px] font-bold px-2 py-1 rounded-lg ${th==='light'?'bg-amber-200 text-amber-800':'bg-amber-500/20 text-amber-300'}`}>Re-check</button>
-            </div>
-          ) : bgStatus === 'running' ? (
-            <div className={`rounded-xl px-3 py-2 border flex items-center gap-2 ${th==='light'?'bg-emerald-50 border-emerald-200':'bg-emerald-500/10 border-emerald-500/20'}`}>
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0"/>
-              <span className={`text-[10px] font-mono font-bold ${th==='light'?'text-emerald-700':'text-emerald-400'}`}>Background Service Active</span>
-            </div>
-          ) : null}
-        </div>
         <div className="px-4 pb-3">
           {todayGoal ? (
             <div className={`rounded-xl p-3 border ${th==='light'?'bg-emerald-50 border-emerald-200':'bg-emerald-500/10 border-emerald-500/20'}`}>
@@ -1054,7 +925,7 @@ export default function App() {
                       </span>
                     </div>
                     <p className={`font-bold text-base leading-snug ${th==='light'?'text-slate-900':'text-white'}`}>
-                      {alert.subject === 'Quant' ? 'Harshal Sir' : 'Smriti Mam'} just uploaded — <span className="text-red-500">{alert.taskName}</span>
+                      {alert.channelName} just uploaded — <span className="text-red-500">{alert.taskName}</span>
                     </p>
                     <p className={`text-sm mt-0.5 truncate ${th==='light'?'text-slate-600':'text-white/60'}`}>{alert.videoTitle}</p>
                     <div className="flex gap-2 mt-3 flex-wrap">
@@ -1585,39 +1456,6 @@ function SettingsView({formData,setFormData,onSave,theme}:{formData:UserSettings
   const card=`border rounded-2xl p-6 ${theme==='light'?'bg-white border-slate-200':'bg-[#1c1d21] border-white/5'}`;
   const inp=`w-full border rounded-xl py-3 px-4 text-sm focus:outline-none ${theme==='light'?'bg-slate-50 border-slate-200 focus:border-slate-400 text-slate-900':'bg-black/40 border-white/10 focus:border-white/30 text-white'}`;
   const lbl=`block text-[10px] uppercase tracking-wider font-mono mb-2 ${theme==='light'?'text-slate-400':'text-white/40'}`;
-  const [tgCfg,setTgCfg]       = useState<{token:string;chatId:string}>(() => getTelegramConfig());
-  const [tgStatus,setTgStatus] = useState<'idle'|'testing'|'ok'|'error'>('idle');
-  const [tgError,setTgError]   = useState('');
-  const [tgSaved,setTgSaved]   = useState(false);
-
-  const handleSaveTelegram = async () => {
-    saveTelegramConfigLS(tgCfg); await syncTelegramConfig(tgCfg);
-    setTgSaved(true); setTimeout(()=>setTgSaved(false), 2500);
-  };
-
-  const handleTestTelegram = async () => {
-    setTgStatus('testing'); setTgError('');
-    try {
-      const res = await fetch('http://localhost:3001/test-telegram', {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ telegramToken:tgCfg.token, telegramChatId:tgCfg.chatId })
-      });
-      const d = await res.json();
-      if (d.ok) setTgStatus('ok');
-      else { setTgStatus('error'); setTgError(d.error||'Unknown error'); }
-    } catch(_) {
-      try {
-        const r2 = await fetch(`https://api.telegram.org/bot${tgCfg.token}/sendMessage`, {
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ chat_id:tgCfg.chatId, text:'<b>ExamRigor Test</b>\n\nTelegram reminders are working!', parse_mode:'HTML' })
-        });
-        const d2 = await r2.json();
-        if (d2.ok) setTgStatus('ok');
-        else { setTgStatus('error'); setTgError(d2.description||'Check your token and Chat ID'); }
-      } catch(e2:any) { setTgStatus('error'); setTgError('Network error — check internet'); }
-    }
-    setTimeout(()=>setTgStatus('idle'), 5000);
-  };
 
   return(
     <div className="space-y-6 max-w-2xl">
@@ -1649,52 +1487,13 @@ function SettingsView({formData,setFormData,onSave,theme}:{formData:UserSettings
         </div>
       </div>
 
-      {/* ── Telegram Notifications ── */}
-      <div className={`border rounded-2xl p-6 ${theme==='light'?'bg-white border-blue-200':'bg-[#1c1d21] border-blue-500/20'}`}>
-        <h3 className={`text-xs font-bold uppercase tracking-widest mb-1 font-mono flex items-center gap-2 ${theme==='light'?'text-blue-700':'text-blue-400'}`}>
-          <Bell className="w-4 h-4"/>Telegram Notifications
-        </h3>
-        <p className={`text-xs mb-5 leading-relaxed ${theme==='light'?'text-slate-500':'text-white/40'}`}>
-          Get a Telegram message on your phone when any reminder fires — even if your PC is away.<br/>
-          <span className={`font-bold ${theme==='light'?'text-slate-700':'text-white/70'}`}>3 steps to set up:</span><br/>
-          1. Open Telegram → search <code className={`px-1 py-0.5 rounded text-[11px] ${theme==='light'?'bg-slate-100':'bg-white/10'}`}>@BotFather</code> → send <code className={`px-1 py-0.5 rounded text-[11px] ${theme==='light'?'bg-slate-100':'bg-white/10'}`}>/newbot</code> → copy the token below<br/>
-          2. Message <code className={`px-1 py-0.5 rounded text-[11px] ${theme==='light'?'bg-slate-100':'bg-white/10'}`}>@userinfobot</code> on Telegram → it replies with your Chat ID<br/>
-          3. Paste both below → click Save → click Send Test Message
-        </p>
-        <div className="space-y-4">
-          <div>
-            <label className={lbl}>Bot Token (from @BotFather)</label>
-            <input type="text" className={inp} placeholder="1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ"
-              value={tgCfg.token} onChange={e=>setTgCfg({...tgCfg,token:e.target.value.trim()})}/>
-          </div>
-          <div>
-            <label className={lbl}>Your Chat ID (from @userinfobot)</label>
-            <input type="text" className={inp} placeholder="123456789"
-              value={tgCfg.chatId} onChange={e=>setTgCfg({...tgCfg,chatId:e.target.value.trim()})}/>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={handleSaveTelegram} className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 ${tgSaved?'bg-emerald-600 text-white':'bg-blue-600 text-white hover:bg-blue-500'}`}>
-              <Save className="w-4 h-4"/>{tgSaved?'Saved!':'Save Credentials'}
-            </button>
-            <button onClick={handleTestTelegram} disabled={!tgCfg.token||!tgCfg.chatId||tgStatus==='testing'}
-              className={`flex-1 py-3 rounded-xl text-sm font-bold transition-all flex items-center justify-center gap-2 disabled:opacity-40 ${tgStatus==='ok'?'bg-emerald-600 text-white':tgStatus==='error'?'bg-red-600 text-white':theme==='light'?'bg-slate-100 text-slate-700 hover:bg-slate-200':'bg-white/10 text-white hover:bg-white/20'}`}>
-              <Bell className="w-4 h-4"/>
-              {tgStatus==='testing'?'Sending…':tgStatus==='ok'?'Message Sent! Check Telegram':tgStatus==='error'?'Failed — See Error':'Send Test Message'}
-            </button>
-          </div>
-          {tgStatus==='error'&&tgError&&<p className="text-xs text-red-400 font-mono bg-red-500/10 rounded-lg px-3 py-2">{tgError}</p>}
-          {tgStatus==='ok'&&<p className={`text-xs font-mono rounded-lg px-3 py-2 ${theme==='light'?'bg-emerald-50 text-emerald-700':'bg-emerald-500/10 text-emerald-400'}`}>Test message sent! Check your Telegram app now.</p>}
-          {(tgCfg.token&&tgCfg.chatId)&&<p className={`text-[10px] font-mono flex items-center gap-1.5 ${theme==='light'?'text-emerald-600':'text-emerald-400'}`}><CheckCircle2 className="w-3 h-3"/>Telegram configured — reminders will be sent as messages</p>}
-        </div>
-      </div>
-
       {/* ── YouTube Class Monitor ── */}
       <div className={`border rounded-2xl p-6 ${th2==='light'?'bg-white border-red-200':'bg-[#1c1d21] border-red-500/20'}`}>
         <h3 className={`text-xs font-bold uppercase tracking-widest mb-1 font-mono flex items-center gap-2 ${th2==='light'?'text-red-700':'text-red-400'}`}>
           <span className="text-base">▶</span> YouTube Class Monitor
         </h3>
         <p className={`text-xs mb-4 leading-relaxed ${th2==='light'?'text-slate-500':'text-white/40'}`}>
-          Automatically checked every 15 minutes. When a new video is detected, you'll get a beep, desktop notification, Telegram message, and an in-app banner to start the task instantly.
+          Automatically checked every 15 minutes. When a new video is detected, you'll get a beep, desktop notification, and an in-app banner to start the task instantly.
         </p>
         <div className={`rounded-xl divide-y ${th2==='light'?'border border-slate-200 divide-slate-100':'border border-white/10 divide-white/5'}`}>
           <div className="flex items-center gap-4 p-4">
@@ -1714,15 +1513,6 @@ function SettingsView({formData,setFormData,onSave,theme}:{formData:UserSettings
             <span className={`text-[10px] font-mono px-2 py-1 rounded-full ${th2==='light'?'bg-emerald-100 text-emerald-700':'bg-emerald-500/20 text-emerald-400'}`}>Active</span>
           </div>
         </div>
-        <button onClick={async()=>{
-          try{
-            const r=await fetch('http://localhost:3001/yt-check',{method:'POST'});
-            if(r.ok) alert('YouTube check triggered! If new videos were found, alerts will appear shortly.');
-            else alert('bg-notifier not running. Start start-background-alerts.bat first.');
-          } catch(_){ alert('bg-notifier not running. Start start-background-alerts.bat to enable YouTube monitoring.'); }
-        }} className={`mt-4 w-full py-2.5 rounded-xl text-sm font-bold border transition-all flex items-center justify-center gap-2 ${th2==='light'?'border-slate-200 text-slate-600 hover:bg-slate-50':'border-white/10 text-white/60 hover:bg-white/5'}`}>
-          Check Now (Manual Trigger)
-        </button>
       </div>
 
       {/* ── Data Export / Import ── */}

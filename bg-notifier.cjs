@@ -13,10 +13,6 @@ const http     = require('http');
 // ── Try loading dotenv (optional) ────────────────────────────────────────────
 try { require('dotenv').config(); } catch(_) {}
 
-// ── Try loading node-fetch (optional, for Telegram) ──────────────────────────
-let fetch = null;
-try { fetch = require('node-fetch'); } catch(_) {}
-
 // ── Config ───────────────────────────────────────────────────────────────────
 const INTERVAL_HOURS = 4;
 const INTERVAL_MS    = INTERVAL_HOURS * 60 * 60 * 1000;
@@ -46,21 +42,17 @@ var YT_PENDING_FILE = path.join(__dirname, 'bg-yt-pending.json');
 var ytSeen    = {};    // { channelId: ['videoId1', 'videoId2', ...] }
 var ytPending = [];    // alerts waiting to be picked up by app
 
-// ── Runtime config (Telegram credentials etc.) — loaded from bg-config.json ──
-let appConfig = { telegramToken: '', telegramChatId: '' };
+// ── Runtime config ───────────────────────────────────────────────────────────
+let appConfig = {};
 
 function loadConfig() {
   // Priority: bg-config.json (written by app UI) > .env
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      var c = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-      appConfig.telegramToken  = c.telegramToken  || process.env.TELEGRAM_BOT_TOKEN  || '';
-      appConfig.telegramChatId = c.telegramChatId || process.env.TELEGRAM_CHAT_ID    || '';
+      appConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
       log('Config loaded from bg-config.json');
     } else {
-      appConfig.telegramToken  = process.env.TELEGRAM_BOT_TOKEN  || '';
-      appConfig.telegramChatId = process.env.TELEGRAM_CHAT_ID    || '';
-      log('Config loaded from .env (no bg-config.json yet)');
+      log('No bg-config.json yet');
     }
   } catch(e) { log('Config load error: ' + e.message); }
 }
@@ -75,30 +67,6 @@ function log(msg) {
   const line = '[' + new Date().toLocaleString('en-IN') + '] ' + msg;
   console.log(line);
   try { fs.appendFileSync(LOG_FILE, line + '\n'); } catch(_) {}
-}
-
-// ── Telegram ──────────────────────────────────────────────────────────────────
-async function sendTelegram(text) {
-  if (!fetch) return;
-  var token  = appConfig.telegramToken;
-  var chatId = appConfig.telegramChatId;
-  if (!token || !chatId || token === 'YOUR_BOT_TOKEN_HERE') {
-    log('Telegram not configured — skipping message');
-    return;
-  }
-  try {
-    var res = await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: text, parse_mode: 'HTML' })
-    });
-    if (!res.ok) {
-      var err = await res.text();
-      log('Telegram error: ' + res.status + ' ' + err);
-    } else {
-      log('Telegram message sent: ' + text.substring(0, 60));
-    }
-  } catch(e) { log('Telegram failed: ' + e.message); }
 }
 
 // ── Beep via PowerShell Console.Beep ────────────────────────────────────────
@@ -210,12 +178,6 @@ function checkReminders() {
           'It is ' + hhmm + ' - time to start ' + r.task_name
         );
       }, 500);
-      // Telegram message with full detail
-      var tgMsg = '<b>ExamRigor Reminder</b>\n\n'
-        + 'Task: <b>' + r.task_name + '</b>\n'
-        + 'Time: <b>' + hhmm + '</b>\n\n'
-        + 'Your reminder alarm has fired. Start the task now!';
-      sendTelegram(tgMsg);
     }
   });
 }
@@ -231,7 +193,6 @@ function triggerStudyAlert() {
       'It is ' + now + '. ' + INTERVAL_HOURS + ' hours done. Take a break then get back!'
     );
   }, 800);
-  sendTelegram('ExamRigor: 4-hour check-in at ' + now);
 }
 
 // ── YouTube RSS Monitor ───────────────────────────────────────────────────────
@@ -339,16 +300,6 @@ async function checkYouTube() {
           );
         }, 400);
 
-        // Telegram message with video link
-        var tgMsg = '<b>YouTube Class Alert!</b>\n\n'
-          + 'Channel: <b>' + ch.name + '</b>\n'
-          + 'Task: <b>' + ch.taskName + '</b>\n'
-          + 'Time: <b>' + timeStr + '</b>\n\n'
-          + '<b>' + v.title + '</b>\n\n'
-          + 'Watch now: ' + v.url + '\n\n'
-          + 'Class time has been recorded in ExamRigor.';
-        sendTelegram(tgMsg);
-
         // Store pending alert for the app to pick up
         var alert = {
           id:        'yt-' + v.id,
@@ -401,71 +352,7 @@ function startHttpServer() {
       return;
     }
 
-    // /config — receives Telegram credentials from the Settings UI
-    if (req.method === 'POST' && req.url === '/config') {
-      var cfgBody = '';
-      req.on('data', function(c) { cfgBody += c; });
-      req.on('end', function() {
-        try {
-          var cfg = JSON.parse(cfgBody);
-          appConfig.telegramToken  = cfg.telegramToken  || '';
-          appConfig.telegramChatId = cfg.telegramChatId || '';
-          fs.writeFileSync(CONFIG_FILE, JSON.stringify(appConfig, null, 2), 'utf8');
-          log('Config saved: Telegram ' + (appConfig.telegramToken ? 'configured' : 'cleared'));
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch(e) {
-          log('Bad config JSON: ' + e.message);
-          res.writeHead(400); res.end('Bad JSON');
-        }
-      });
-      return;
-    }
-
-    // /test-telegram — sends a test message, called from Settings UI
-    if (req.method === 'POST' && req.url === '/test-telegram') {
-      var testBody = '';
-      req.on('data', function(c) { testBody += c; });
-      req.on('end', async function() {
-        try {
-          var cfg = JSON.parse(testBody);
-          var tok = cfg.telegramToken  || appConfig.telegramToken;
-          var cid = cfg.telegramChatId || appConfig.telegramChatId;
-          if (!tok || !cid) {
-            res.writeHead(400);
-            res.end(JSON.stringify({ ok: false, error: 'Token or Chat ID missing' }));
-            return;
-          }
-          if (!fetch) {
-            res.writeHead(500);
-            res.end(JSON.stringify({ ok: false, error: 'node-fetch not available' }));
-            return;
-          }
-          var tgRes = await fetch('https://api.telegram.org/bot' + tok + '/sendMessage', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: cid,
-              text: '<b>ExamRigor Test Message</b>\n\nYour Telegram reminders are working!\n\nTask reminders will be sent here with the task name and time.',
-              parse_mode: 'HTML'
-            })
-          });
-          var result = await tgRes.json();
-          if (result.ok) {
-            log('Test Telegram sent OK');
-            res.writeHead(200); res.end(JSON.stringify({ ok: true }));
-          } else {
-            log('Test Telegram failed: ' + result.description);
-            res.writeHead(200); res.end(JSON.stringify({ ok: false, error: result.description }));
-          }
-        } catch(e) {
-          log('Test Telegram error: ' + e.message);
-          res.writeHead(500); res.end(JSON.stringify({ ok: false, error: e.message }));
-        }
-      });
-      return;
-    }
-
+    // /ping — checks if service is running
     if (req.method === 'GET' && req.url === '/ping') {
       res.writeHead(200); res.end('ExamRigor bg-notifier v3 running');
       return;
